@@ -66,6 +66,8 @@ WHISPER_COMPUTE_TYPE=int8
    - `GET /` for health checks.
    - `POST /jobs` to start a background processing task. Vercel calls this after creating a job.
 
+Password login does not use a magic-link callback route; `/login` signs in directly and redirects to `/dashboard`.
+
 ## Local development
 
 ```bash
