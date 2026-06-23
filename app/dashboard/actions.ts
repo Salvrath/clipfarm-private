@@ -36,7 +36,9 @@ export async function createJob(formData: FormData) {
     revalidatePath("/dashboard");
     throw new Error(message);
   }
-
+  
+console.log("Worker URL used:", process.env.WORKER_URL);
+  
   let response: Response;
   try {
     response = await fetch(`${workerUrl}/jobs`, {
