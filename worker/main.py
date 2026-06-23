@@ -1,6 +1,6 @@
 import os
 import re
-import shutil
+import shlex
 import subprocess
 import tempfile
 import traceback
@@ -12,7 +12,6 @@ from typing import Any
 from fastapi import BackgroundTasks, FastAPI, Header, HTTPException
 from pydantic import BaseModel
 from supabase import create_client
-from yt_dlp import YoutubeDL
 
 try:
     from faster_whisper import WhisperModel
@@ -54,7 +53,7 @@ def process_job(job_id: str) -> None:
             supabase.table("jobs").update({"status": "processing", "error_message": None}).eq("id", job_id).execute()
             print(f"status updated to processing: {job_id}", flush=True)
             print(f"download started: {job_id}", flush=True)
-            source = download_video(job["source_url"], workdir)
+            source = download_video(job["source_url"], workdir, job_id)
             print(f"download completed: {job_id} -> {source.name}", flush=True)
             print(f"transcription started: {job_id}", flush=True)
             transcript = transcribe(source)
@@ -72,10 +71,41 @@ def process_job(job_id: str) -> None:
             supabase.table("jobs").update({"status": "failed", "error_message": str(exc)}).eq("id", job_id).execute()
             raise
 
-def download_video(url: str, workdir: Path) -> Path:
+def download_video(url: str, workdir: Path, job_id: str) -> Path:
     output = workdir / "source.%(ext)s"
-    with YoutubeDL({"outtmpl": str(output), "format": "bv*+ba/b", "merge_output_format": "mp4", "noplaylist": True}) as ydl:
-        ydl.download([url])
+    command = [
+        "yt-dlp",
+        "--no-check-certificates",
+        "--retries",
+        "10",
+        "--fragment-retries",
+        "10",
+        "--socket-timeout",
+        "30",
+        "--extractor-args",
+        "youtube:player_client=android,web",
+        "--force-ipv4",
+        "--format",
+        "bv*[height<=720]+ba/b[height<=720]/best[height<=720]/best",
+        "--merge-output-format",
+        "mp4",
+        "--no-playlist",
+        "--output",
+        str(output),
+        url
+    ]
+    print("Starting yt-dlp download", flush=True)
+    print(f"yt-dlp source URL: {url}", flush=True)
+    print(f"yt-dlp command: {shlex.join(command)}", flush=True)
+    try:
+        subprocess.run(command, cwd=workdir, text=True, capture_output=True, check=True)
+    except subprocess.CalledProcessError as exc:
+        output_text = "\n".join(part for part in [exc.stdout, exc.stderr] if part)
+        error_excerpt = output_text[:2000] or str(exc)[:2000]
+        print(f"yt-dlp download failed: {error_excerpt}", flush=True)
+        supabase.table("jobs").update({"status": "failed", "error_message": error_excerpt}).eq("id", job_id).execute()
+        raise RuntimeError(error_excerpt) from exc
+    print("yt-dlp download completed", flush=True)
     matches = list(workdir.glob("source.*"))
     if not matches:
         raise RuntimeError("yt-dlp did not produce a source video")
