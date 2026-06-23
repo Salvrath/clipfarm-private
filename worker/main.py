@@ -3,6 +3,7 @@ import re
 import shutil
 import subprocess
 import tempfile
+import traceback
 import zipfile
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -37,6 +38,8 @@ def health() -> dict[str, str]:
 
 @app.post("/jobs")
 def enqueue_job(payload: JobRequest, background_tasks: BackgroundTasks, x_worker_secret: str = Header(default="")) -> dict[str, str]:
+    print("POST /jobs received", flush=True)
+    print(f"job_id received: {payload.job_id}", flush=True)
     if x_worker_secret != WORKER_SHARED_SECRET:
         raise HTTPException(status_code=401, detail="unauthorized")
     background_tasks.add_task(process_job, payload.job_id)
@@ -47,15 +50,25 @@ def process_job(job_id: str) -> None:
         workdir = Path(tmp)
         try:
             job = supabase.table("jobs").select("*").eq("id", job_id).single().execute().data
+            print(f"job loaded from Supabase: {job_id}", flush=True)
             supabase.table("jobs").update({"status": "processing", "error_message": None}).eq("id", job_id).execute()
+            print(f"status updated to processing: {job_id}", flush=True)
+            print(f"download started: {job_id}", flush=True)
             source = download_video(job["source_url"], workdir)
+            print(f"download completed: {job_id} -> {source.name}", flush=True)
+            print(f"transcription started: {job_id}", flush=True)
             transcript = transcribe(source)
+            print(f"transcription completed: {job_id}; segments={len(transcript)}", flush=True)
             starts = score_highlights(transcript, int(job["clip_count"]), int(job["clip_length"]))
+            print(f"clips selected: {job_id}; starts={starts}", flush=True)
             assets = render_clips(source, starts, int(job["clip_length"]), transcript, workdir, job_id)
             source.unlink(missing_ok=True)
             expires_at = (datetime.now(timezone.utc) + timedelta(hours=24)).isoformat()
             supabase.table("jobs").update({"status": "complete", "assets": assets, "expires_at": expires_at}).eq("id", job_id).execute()
+            print(f"job completed: {job_id}", flush=True)
         except Exception as exc:  # noqa: BLE001 - persist worker failures to the job record
+            print(f"exception while processing job {job_id}: {exc}", flush=True)
+            print(traceback.format_exc(), flush=True)
             supabase.table("jobs").update({"status": "failed", "error_message": str(exc)}).eq("id", job_id).execute()
             raise
 
@@ -101,7 +114,9 @@ def render_clips(source: Path, starts: list[float], length: int, transcript: lis
         write_srt(subtitle, transcript, start, length)
         output = workdir / f"clip-{index}.mp4"
         vf = f"scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,subtitles={subtitle.name}:force_style='Alignment=2,Fontsize=18,Outline=2'"
+        print(f"clip render started: job={job_id} clip={index} start={start} length={length}", flush=True)
         subprocess.run(["ffmpeg", "-y", "-ss", str(start), "-i", str(source), "-t", str(length), "-vf", vf, "-c:v", "libx264", "-preset", "veryfast", "-c:a", "aac", str(output)], cwd=workdir, check=True)
+        print(f"clip render completed: job={job_id} clip={index} output={output.name}", flush=True)
         clip_paths.append(output)
     zip_path = workdir / "clipfarm-clips.zip"
     with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as archive:
@@ -110,10 +125,14 @@ def render_clips(source: Path, starts: list[float], length: int, transcript: lis
     assets = []
     for clip in clip_paths:
         path = f"{job_id}/{clip.name}"
+        print(f"upload started: job={job_id} path={path}", flush=True)
         upload(path, clip, "video/mp4")
+        print(f"upload completed: job={job_id} path={path}", flush=True)
         assets.append({"path": path, "kind": "clip"})
     zip_storage_path = f"{job_id}/{zip_path.name}"
+    print(f"upload started: job={job_id} path={zip_storage_path}", flush=True)
     upload(zip_storage_path, zip_path, "application/zip")
+    print(f"upload completed: job={job_id} path={zip_storage_path}", flush=True)
     assets.append({"path": zip_storage_path, "kind": "zip"})
     return assets
 

@@ -27,21 +27,32 @@ export async function createJob(formData: FormData) {
   }).select("id").single();
   if (error) throw new Error(error.message);
 
-  const workerUrl = process.env.WORKER_URL;
-  const workerSecret = process.env.WORKER_SHARED_SECRET;
+  const workerUrl = process.env.WORKER_URL?.trim();
+  const workerSecret = process.env.WORKER_SHARED_SECRET?.trim();
 
   if (!workerUrl || !workerSecret) {
-    const message = "ClipFarm worker is not configured. Set WORKER_URL and WORKER_SHARED_SECRET.";
-    await markJobFailed(supabase, job.id, message);
+    const missing = [
+      !workerUrl ? "WORKER_URL" : null,
+      !workerSecret ? "WORKER_SHARED_SECRET" : null
+    ].filter(Boolean).join(", ");
+    const message = `Missing worker environment variable(s): ${missing}`;
+
+    await supabase.from("jobs").update({
+      status: "failed",
+      error_message: message
+    }).eq("id", job.id);
+
     revalidatePath("/dashboard");
     throw new Error(message);
   }
-  
-console.log("Worker URL used:", process.env.WORKER_URL);
-  
+
+  const endpoint = `${workerUrl.replace(/\/$/, "")}/jobs`;
+  console.log("Worker endpoint used:", endpoint);
+
   let response: Response;
+
   try {
-    response = await fetch(`${workerUrl}/jobs`, {
+    response = await fetch(endpoint, {
       method: "POST",
       headers: {
         "content-type": "application/json",
@@ -49,29 +60,36 @@ console.log("Worker URL used:", process.env.WORKER_URL);
       },
       body: JSON.stringify({ job_id: job.id })
     });
-  } catch (error) {
-    const message = error instanceof Error ? error.message : "Unknown worker request failure";
-    await markJobFailed(supabase, job.id, `Worker request failed: ${message}`);
-    revalidatePath("/dashboard");
-    throw new Error(`Worker request failed: ${message}`);
-  }
+  } catch (err) {
+    const thrownMessage = err instanceof Error ? err.message : String(err);
+    const message = `Worker fetch failed. Endpoint: ${endpoint}. Error: ${thrownMessage}`;
 
-  if (!response.ok) {
-    const body = await response.text();
-    const message = `Worker rejected job with status ${response.status}: ${body}`;
-    console.error("Worker rejected ClipFarm job", { status: response.status, body });
-    await markJobFailed(supabase, job.id, message);
+    await supabase.from("jobs").update({
+      status: "failed",
+      error_message: message
+    }).eq("id", job.id);
+
     revalidatePath("/dashboard");
     throw new Error(message);
   }
 
-  console.log(`Worker accepted ClipFarm job ${job.id}`);
-  revalidatePath("/dashboard");
-}
+  if (!response.ok) {
+    const body = await response.text();
+    const truncatedBody = body.slice(0, 1000);
+    const message = `Worker rejected job. Endpoint: ${endpoint}. Status: ${response.status}. Body: ${truncatedBody}`;
+    console.error("Worker rejected job", { endpoint, status: response.status, body: truncatedBody });
 
-async function markJobFailed(supabase: ReturnType<typeof serverSupabase>, jobId: string, errorMessage: string) {
-  const { error } = await supabase.from("jobs").update({ status: "failed", error_message: errorMessage }).eq("id", jobId);
-  if (error) throw new Error(`Failed to update job after worker error: ${error.message}`);
+    await supabase.from("jobs").update({
+      status: "failed",
+      error_message: message
+    }).eq("id", job.id);
+
+    revalidatePath("/dashboard");
+    throw new Error(`Worker rejected job. Endpoint: ${endpoint}. Status: ${response.status}`);
+  }
+
+  console.log(`Worker accepted job ${job.id} at ${endpoint}`);
+  revalidatePath("/dashboard");
 }
 
 export async function signOut() {
