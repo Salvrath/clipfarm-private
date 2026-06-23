@@ -10,7 +10,7 @@ export default async function LoginPage() {
     <main className="container">
       <div className="card" style={{ maxWidth: 520 }}>
         <h2>Sign in to ClipFarm</h2>
-        <p>This app is intended for one private user. Disable public signups in Supabase after creating your account.</p>
+        <p>This app is intended for one private user. Create your Supabase email/password user, then disable public signups.</p>
         <LoginForm />
       </div>
     </main>

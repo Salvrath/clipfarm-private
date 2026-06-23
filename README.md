@@ -4,7 +4,7 @@ ClipFarm is a private MVP for turning one YouTube or Twitch VOD URL into short-f
 
 ## What it does
 
-- Private Supabase magic-link login.
+- Private Supabase email/password login.
 - Dashboard with a single YouTube/Twitch VOD URL input.
 - Clip count choices: 3, 5, or 10.
 - Clip length choices: 30s, 45s, or 60s.
@@ -22,7 +22,7 @@ ClipFarm is a private MVP for turning one YouTube or Twitch VOD URL into short-f
 ## Supabase setup
 
 1. Create a Supabase project.
-2. In **Authentication > Providers > Email**, enable magic links. For a private app, create your user first and then disable public signups.
+2. In **Authentication > Users**, create your private user with an email and password. Keep email/password auth enabled and disable public signups for the private MVP.
 3. Run `supabase/schema.sql` in the Supabase SQL editor.
 4. Copy these values for deployment:
    - Project URL: `NEXT_PUBLIC_SUPABASE_URL` / `SUPABASE_URL`
@@ -44,7 +44,7 @@ WORKER_URL=https://your-space-name.hf.space
 WORKER_SHARED_SECRET=change-me
 ```
 
-3. Deploy. Open `/login`, sign in with your private email, then use `/dashboard`.
+3. Deploy. Open `/login`, sign in with your private email and password, then use `/dashboard`.
 
 ## Hugging Face Spaces worker setup
 
@@ -65,6 +65,8 @@ WHISPER_COMPUTE_TYPE=int8
 4. The worker exposes:
    - `GET /` for health checks.
    - `POST /jobs` to start a background processing task. Vercel calls this after creating a job.
+
+Password login does not use a magic-link callback route; `/login` signs in directly and redirects to `/dashboard`.
 
 ## Local development
 
