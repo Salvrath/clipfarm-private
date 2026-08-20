@@ -1,7 +1,6 @@
 import json
 import os
 import re
-import shlex
 import subprocess
 import tempfile
 import traceback
@@ -106,9 +105,51 @@ def process_job(job: dict[str, Any]) -> None:
 
 
 def download_video(url: str, workdir: Path) -> Path:
+    primary_binary = "yt-dlp"
+    wpc_binary = os.getenv("WPC_YTDLP_BIN", "").strip()
+    wpc_browser = os.getenv("WPC_BROWSER_PATH", "").strip()
+
+    attempts: list[tuple[str, str, str, str | None]] = [
+        ("bgutil/mweb", primary_binary, "mweb", None),
+    ]
+    if wpc_binary and wpc_browser:
+        attempts.extend(
+            [
+                ("wpc/mweb", wpc_binary, "mweb", wpc_browser),
+                ("wpc/web_embedded", wpc_binary, "web_embedded", wpc_browser),
+            ]
+        )
+
+    errors: list[str] = []
+    for label, binary, player_client, browser_path in attempts:
+        cleanup_source_downloads(workdir)
+        source, error = run_yt_dlp_attempt(
+            url=url,
+            workdir=workdir,
+            binary=binary,
+            player_client=player_client,
+            browser_path=browser_path,
+            label=label,
+        )
+        if source:
+            return source
+        errors.append(f"{label}: {error}")
+
+    raise RuntimeError("All YouTube download strategies failed:\n" + "\n\n".join(errors))
+
+
+def run_yt_dlp_attempt(
+    *,
+    url: str,
+    workdir: Path,
+    binary: str,
+    player_client: str,
+    browser_path: str | None,
+    label: str,
+) -> tuple[Path | None, str]:
     output = workdir / "source.%(ext)s"
     command = [
-        "yt-dlp",
+        binary,
         "--no-playlist",
         "--retries",
         "10",
@@ -119,25 +160,51 @@ def download_video(url: str, workdir: Path) -> Path:
         "--js-runtimes",
         "node",
         "--extractor-args",
-        "youtube:player_client=mweb",
-        "--format",
-        "bv*[height<=720]+ba/b[height<=720]/best[height<=720]/best",
-        "--merge-output-format",
-        "mp4",
-        "--output",
-        str(output),
-        url,
+        f"youtube:player_client={player_client}",
     ]
-    print(f"yt-dlp: {shlex.join(command)}", flush=True)
-    result = subprocess.run(command, cwd=workdir, text=True, capture_output=True)
-    if result.returncode != 0:
-        error_text = "\n".join(part for part in [result.stdout, result.stderr] if part).strip()
-        raise RuntimeError(error_text[:3000] or "yt-dlp failed")
+    if browser_path:
+        command.extend(
+            [
+                "--extractor-args",
+                f"youtubepot-wpc:browser_path={browser_path}",
+            ]
+        )
+    command.extend(
+        [
+            "--format",
+            "bv*[height<=720]+ba/b[height<=720]/best[height<=720]/best",
+            "--merge-output-format",
+            "mp4",
+            "--output",
+            str(output),
+            url,
+        ]
+    )
 
-    matches = sorted(workdir.glob("source.*"))
-    if not matches:
-        raise RuntimeError("yt-dlp did not produce a source video")
-    return matches[0]
+    print(f"yt-dlp attempt: {label}", flush=True)
+    result = subprocess.run(command, cwd=workdir, text=True, capture_output=True)
+    matches = [
+        path
+        for path in sorted(workdir.glob("source.*"))
+        if path.is_file() and not path.name.endswith((".part", ".ytdl"))
+    ]
+    if result.returncode == 0 and matches:
+        print(f"yt-dlp succeeded with {label}", flush=True)
+        return matches[0], ""
+
+    error_text = "\n".join(part for part in [result.stdout, result.stderr] if part).strip()
+    error_text = error_text.replace(url, "[source-url]")
+    if result.returncode == 0 and not matches:
+        error_text = (error_text + "\nyt-dlp exited successfully but produced no source video").strip()
+    error_text = error_text[:3000] or f"yt-dlp failed with exit code {result.returncode}"
+    print(f"yt-dlp {label} failed: {error_text[:1200]}", flush=True)
+    return None, error_text
+
+
+def cleanup_source_downloads(workdir: Path) -> None:
+    for path in workdir.glob("source.*"):
+        if path.is_file():
+            path.unlink(missing_ok=True)
 
 
 def transcribe(video_path: Path) -> list[dict[str, Any]]:

@@ -42,17 +42,36 @@ jobs:
       - name: Install system and Python dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y ffmpeg
+          sudo apt-get install -y ffmpeg xvfb
           python -m pip install --upgrade pip
           python -m pip install -r worker/requirements.txt
 
-      - name: Install YouTube PO-token provider
+      - name: Install bgutil PO-token provider
         run: |
           rm -rf "$HOME/bgutil-ytdlp-pot-provider"
           git clone --depth 1 --branch 1.3.1 https://github.com/Brainicism/bgutil-ytdlp-pot-provider.git "$HOME/bgutil-ytdlp-pot-provider"
           cd "$HOME/bgutil-ytdlp-pot-provider/server"
           npm ci
           npx tsc
+
+      - name: Install WebPoClient fallback
+        shell: bash
+        run: |
+          WPC_VENV="$RUNNER_TEMP/clipfarm-wpc"
+          python -m venv "$WPC_VENV"
+          "$WPC_VENV/bin/python" -m pip install --upgrade pip
+          "$WPC_VENV/bin/python" -m pip install "yt-dlp[default]==2026.6.9" "yt-dlp-getpot-wpc==1.1.2"
+
+          CHROME_PATH="$(command -v google-chrome || command -v google-chrome-stable || command -v chromium || true)"
+          if [ -z "$CHROME_PATH" ]; then
+            echo "Chrome/Chromium is required for the WebPoClient fallback"
+            exit 1
+          fi
+
+          "$WPC_VENV/bin/yt-dlp" --version
+          "$CHROME_PATH" --version
+          echo "WPC_YTDLP_BIN=$WPC_VENV/bin/yt-dlp" >> "$GITHUB_ENV"
+          echo "WPC_BROWSER_PATH=$CHROME_PATH" >> "$GITHUB_ENV"
 
       - name: Request short-lived GitHub OIDC token
         shell: bash
@@ -94,4 +113,4 @@ jobs:
           fi
 
           cd "$GITHUB_WORKSPACE"
-          python worker/main.py
+          xvfb-run -a -s "-screen 0 1280x720x24" python worker/main.py
