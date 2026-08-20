@@ -1,6 +1,5 @@
 import { cookies } from "next/headers";
 import { createServerClient } from "@supabase/ssr";
-import { createClient } from "@supabase/supabase-js";
 
 export type ClipAsset = { path: string; signedUrl?: string; kind: "clip" | "zip" };
 export type ClipJob = {
@@ -29,10 +28,3 @@ export function serverSupabase() {
 }
 
 export const routeSupabase = serverSupabase;
-
-export function adminSupabase() {
-  const url = process.env.NEXT_PUBLIC_SUPABASE_URL || process.env.SUPABASE_URL;
-  const key = process.env.SUPABASE_SERVICE_ROLE_KEY;
-  if (!url || !key) throw new Error("Missing Supabase admin environment variables");
-  return createClient(url, key, { auth: { persistSession: false } });
-}
