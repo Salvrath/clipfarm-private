@@ -88,6 +88,10 @@ jobs:
           EDGE_FUNCTION_URL: https://urlrvkkobtvpuefbpowe.supabase.co/functions/v1/clipfarm-worker
           SUPABASE_URL: https://urlrvkkobtvpuefbpowe.supabase.co
           SUPABASE_PUBLISHABLE_KEY: sb_publishable_mO_DDIskW1ym7L3HAF3U1Q_jyO055NG
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_BUCKET: clipfarm-sources
           WHISPER_MODEL: base
           WHISPER_DEVICE: cpu
           WHISPER_COMPUTE_TYPE: int8
