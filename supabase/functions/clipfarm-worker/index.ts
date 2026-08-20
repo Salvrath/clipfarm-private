@@ -42,9 +42,16 @@ async function authorize(req: Request) {
   return payload;
 }
 
+function escapeRegex(value: string) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
 function validAssetPath(jobId: string, path: string) {
-  const escaped = jobId.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  return new RegExp(`^${escaped}/(?:clip-[1-9][0-9]*\\.mp4|clipfarm-clips\\.zip)$`).test(path);
+  return new RegExp(`^${escapeRegex(jobId)}/(?:clip-[1-9][0-9]*\\.mp4|clipfarm-clips\\.zip)$`).test(path);
+}
+
+function validSourcePath(jobId: string, path: string) {
+  return new RegExp(`^${escapeRegex(jobId)}/source\\.(?:mp4|mov|webm|mkv)$`, "i").test(path);
 }
 
 Deno.serve(async (req) => {
@@ -92,6 +99,25 @@ Deno.serve(async (req) => {
         .eq("id", item.id);
       if (clearError) return json({ error: clearError.message }, 500);
     }
+
+    const { data: completedSources, error: sourceReadError } = await supabase
+      .from("jobs")
+      .select("id,source_path")
+      .eq("status", "complete")
+      .eq("source_type", "upload")
+      .not("source_path", "is", null)
+      .limit(50);
+    if (sourceReadError) return json({ error: sourceReadError.message }, 500);
+
+    for (const item of completedSources || []) {
+      const path = typeof item.source_path === "string" ? item.source_path : "";
+      if (!path || !validSourcePath(String(item.id), path)) continue;
+      const { error: removeError } = await supabase.storage.from("sources").remove([path]);
+      if (removeError) continue;
+      await supabase.from("jobs").update({ source_path: null }).eq("id", item.id);
+      removed += 1;
+    }
+
     return json({ removed });
   }
 
@@ -122,11 +148,22 @@ Deno.serve(async (req) => {
 
   const { data: job, error: jobError } = await supabase
     .from("jobs")
-    .select("id,status,clip_count")
+    .select("id,status,clip_count,source_type,source_path")
     .eq("id", jobId)
     .maybeSingle();
   if (jobError) return json({ error: jobError.message }, 500);
   if (!job) return json({ error: "Job not found" }, 404);
+
+  if (action === "source_download_url") {
+    if (job.status !== "processing") return json({ error: "Job is not processing" }, 409);
+    const sourcePath = typeof job.source_path === "string" ? job.source_path : "";
+    if (job.source_type !== "upload" || !validSourcePath(jobId, sourcePath)) {
+      return json({ error: "Invalid uploaded source" }, 400);
+    }
+    const { data, error } = await supabase.storage.from("sources").createSignedUrl(sourcePath, 15 * 60);
+    if (error || !data?.signedUrl) return json({ error: error?.message || "Could not sign source download" }, 500);
+    return json({ signed_url: data.signedUrl });
+  }
 
   if (action === "upload_urls") {
     if (job.status !== "processing") return json({ error: "Job is not processing" }, 409);
@@ -157,13 +194,28 @@ Deno.serve(async (req) => {
       if (!validAssetPath(jobId, path) || (kind !== "clip" && kind !== "zip")) return json({ error: "Invalid asset" }, 400);
     }
 
+    let sourceRemoved = false;
+    const sourcePath = typeof job.source_path === "string" ? job.source_path : "";
+    if (job.source_type === "upload" && validSourcePath(jobId, sourcePath)) {
+      const { error: sourceRemoveError } = await supabase.storage.from("sources").remove([sourcePath]);
+      sourceRemoved = !sourceRemoveError;
+    }
+
     const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString();
+    const updatePayload: Record<string, unknown> = {
+      status: "complete",
+      error_message: null,
+      assets,
+      expires_at: expiresAt,
+    };
+    if (sourceRemoved) updatePayload.source_path = null;
+
     const { error } = await supabase
       .from("jobs")
-      .update({ status: "complete", error_message: null, assets, expires_at: expiresAt })
+      .update(updatePayload)
       .eq("id", jobId);
     if (error) return json({ error: error.message }, 500);
-    return json({ ok: true, expires_at: expiresAt });
+    return json({ ok: true, expires_at: expiresAt, source_removed: sourceRemoved });
   }
 
   if (action === "fail") {

@@ -74,7 +74,14 @@ def process_job(job: dict[str, Any]) -> None:
 
     with tempfile.TemporaryDirectory(prefix="clipfarm-") as tmp:
         workdir = Path(tmp)
-        source = download_video(str(job["source_url"]), workdir)
+        if str(job.get("source_type") or "youtube") == "upload":
+            source = download_uploaded_source(job, workdir)
+        else:
+            source_url = str(job.get("source_url") or "").strip()
+            if not source_url:
+                raise RuntimeError("YouTube job is missing source_url")
+            source = download_video(source_url, workdir)
+
         transcript = transcribe(source)
         starts = score_highlights(transcript, clip_count, clip_length)
         files = render_clips(source, starts, clip_length, transcript, workdir)
@@ -102,6 +109,37 @@ def process_job(job: dict[str, Any]) -> None:
 
         call_edge("complete", job_id=job_id, assets=assets)
         print(f"Completed job {job_id}", flush=True)
+
+
+def download_uploaded_source(job: dict[str, Any], workdir: Path) -> Path:
+    job_id = str(job["id"])
+    source_path = str(job.get("source_path") or "")
+    match = re.fullmatch(
+        rf"{re.escape(job_id)}/source\.(mp4|mov|webm|mkv)",
+        source_path,
+        flags=re.IGNORECASE,
+    )
+    if not match:
+        raise RuntimeError("Uploaded job has an invalid source path")
+
+    signed = call_edge("source_download_url", job_id=job_id)
+    signed_url = str(signed.get("signed_url") or "")
+    if not signed_url:
+        raise RuntimeError("Worker gateway did not return a source download URL")
+
+    output = workdir / f"source.{match.group(1).lower()}"
+    print("Downloading uploaded source from private storage", flush=True)
+    with requests.get(signed_url, stream=True, timeout=(30, 600)) as response:
+        response.raise_for_status()
+        with output.open("wb") as file_obj:
+            for chunk in response.iter_content(chunk_size=8 * 1024 * 1024):
+                if chunk:
+                    file_obj.write(chunk)
+
+    if not output.exists() or output.stat().st_size == 0:
+        raise RuntimeError("Uploaded source download produced an empty file")
+    print(f"Downloaded uploaded source ({output.stat().st_size} bytes)", flush=True)
+    return output
 
 
 def download_video(url: str, workdir: Path) -> Path:

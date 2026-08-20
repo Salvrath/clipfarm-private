@@ -5,10 +5,13 @@ export type ClipAsset = { path: string; signedUrl?: string; kind: "clip" | "zip"
 export type ClipJob = {
   id: string;
   user_id: string;
-  source_url: string;
+  source_type: "youtube" | "upload";
+  source_url: string | null;
+  source_path: string | null;
+  source_name: string | null;
   clip_count: 3 | 5 | 10;
   clip_length: 30 | 45 | 60;
-  status: "queued" | "processing" | "complete" | "failed";
+  status: "uploading" | "queued" | "processing" | "complete" | "failed";
   error_message: string | null;
   assets: ClipAsset[] | null;
   created_at: string;
