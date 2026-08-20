@@ -21,13 +21,28 @@ export type ClipJob = {
 
 export function serverSupabase() {
   const cookieStore = cookies();
-  return createServerClient(process.env.NEXT_PUBLIC_SUPABASE_URL!, process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!, {
-    cookies: {
-      get(name: string) { return cookieStore.get(name)?.value; },
-      set(name: string, value: string, options: Record<string, unknown>) { cookieStore.set({ name, value, ...options }); },
-      remove(name: string, options: Record<string, unknown>) { cookieStore.set({ name, value: "", ...options }); }
-    }
-  });
+
+  return createServerClient(
+    process.env.NEXT_PUBLIC_SUPABASE_URL!,
+    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
+    {
+      cookies: {
+        getAll() {
+          return cookieStore.getAll();
+        },
+        setAll(cookiesToSet) {
+          try {
+            cookiesToSet.forEach(({ name, value, options }) => {
+              cookieStore.set(name, value, options);
+            });
+          } catch {
+            // Server Components cannot write cookies. middleware.ts refreshes
+            // the session before rendering and persists refreshed cookies.
+          }
+        },
+      },
+    },
+  );
 }
 
 export const routeSupabase = serverSupabase;
