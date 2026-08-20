@@ -1,104 +1,55 @@
 # ClipFarm
 
-ClipFarm is a private MVP for turning one YouTube or Twitch VOD URL into short-form vertical clips with burned-in captions. It is intentionally built for one user, not as a SaaS product.
+ClipFarm is a private web app for turning a YouTube URL into short vertical clips with burned-in captions. Processing is fully cloud-based: the browser submits a job, GitHub Actions runs Whisper/FFmpeg, and finished clips are stored privately in Supabase for 24 hours.
 
-## What it does
+## Architecture
 
-- Private Supabase email/password login.
-- Dashboard with a single YouTube/Twitch VOD URL input.
-- Clip count choices: 3, 5, or 10.
-- Clip length choices: 30s, 45s, or 60s.
-- Job statuses: `queued`, `processing`, `complete`, and `failed`.
-- Python worker downloads with `yt-dlp`, transcribes with `faster-whisper`, picks transcript-based highlights, renders 9:16 MP4 clips with captions via `ffmpeg`, uploads clips plus a ZIP to Supabase Storage, then deletes the original long video from worker disk.
-- Generated clips and ZIP are marked to expire after 24 hours. Run the cleanup endpoint/task in the worker to remove expired storage objects.
+1. Next.js on Vercel creates a `queued` job in Supabase.
+2. A scheduled GitHub Actions workflow runs every five minutes.
+3. The workflow authenticates to a Supabase Edge Function with GitHub OIDC. No permanent service-role key is stored in GitHub.
+4. The GitHub-hosted runner downloads the source with yt-dlp, transcribes it with faster-whisper, selects highlights, renders 9:16 MP4 files with FFmpeg, and uploads through short-lived signed upload tokens.
+5. The dashboard creates signed download links using the signed-in user's Supabase session and RLS.
+6. The worker deletes expired Storage objects after 24 hours.
 
-## Repository layout
+## Cloud resources
 
-- `app/` - Next.js App Router frontend and route handlers for Vercel.
-- `lib/` - Supabase server helpers and shared types.
-- `supabase/schema.sql` - Jobs table, row-level security, and private storage bucket setup.
-- `worker/` - FastAPI worker deployable to Hugging Face Spaces or any Python container host.
+- Supabase project: `urlrvkkobtvpuefbpowe` (`eu-north-1`)
+- Edge Function: `clipfarm-worker`
+- Storage bucket: `clips` (private)
+- Worker: `.github/workflows/clipfarm-worker.yml`
 
-## Supabase setup
+## Vercel environment
 
-1. Create a Supabase project.
-2. In **Authentication > Users**, create your private user with an email and password. Keep email/password auth enabled and disable public signups for the private MVP.
-3. Run `supabase/schema.sql` in the Supabase SQL editor.
-4. Copy these values for deployment:
-   - Project URL: `NEXT_PUBLIC_SUPABASE_URL` / `SUPABASE_URL`
-   - anon key: `NEXT_PUBLIC_SUPABASE_ANON_KEY`
-   - service role key: `SUPABASE_SERVICE_ROLE_KEY`
-5. Keep the `clips` storage bucket private.
-
-## Vercel setup
-
-1. Import this repo into Vercel.
-2. Set environment variables:
+The frontend only needs the public Supabase values:
 
 ```bash
-NEXT_PUBLIC_SUPABASE_URL=...
-NEXT_PUBLIC_SUPABASE_ANON_KEY=...
-SUPABASE_SERVICE_ROLE_KEY=...
-SUPABASE_STORAGE_BUCKET=clips
-WORKER_URL=https://your-space-name.hf.space
-WORKER_SHARED_SECRET=change-me
+NEXT_PUBLIC_SUPABASE_URL=https://urlrvkkobtvpuefbpowe.supabase.co
+NEXT_PUBLIC_SUPABASE_ANON_KEY=<Supabase publishable key>
 ```
 
-3. Deploy. Open `/login`, sign in with your private email and password, then use `/dashboard`.
+`SUPABASE_SERVICE_ROLE_KEY`, `WORKER_URL`, and `WORKER_SHARED_SECRET` are no longer required by Vercel.
 
-## Hugging Face Spaces worker setup
+## GitHub Actions security
 
-1. Create a new Space using the Docker SDK.
-2. Point the Space at the `worker/` directory, or copy `worker/Dockerfile`, `worker/requirements.txt`, and `worker/main.py` into the Space repo root.
-3. Add Space secrets:
+The workflow requests a short-lived GitHub OIDC token with audience `clipfarm-supabase`. The Supabase Edge Function verifies issuer, audience, repository ID, owner ID, workflow ref, branch, and that the runner is GitHub-hosted before allowing jobs to be claimed or updated.
 
-```bash
-SUPABASE_URL=...
-SUPABASE_SERVICE_ROLE_KEY=...
-SUPABASE_STORAGE_BUCKET=clips
-WORKER_SHARED_SECRET=the-same-value-used-in-vercel
-WHISPER_MODEL=base
-WHISPER_DEVICE=cpu
-WHISPER_COMPUTE_TYPE=int8
-```
+No GitHub Actions repository secret is required for Supabase access.
 
-4. The worker exposes:
-   - `GET /` for health checks.
-   - `POST /jobs` to start a background processing task. Vercel calls this after creating a job.
+## Worker dependencies
 
-Password login does not use a magic-link callback route; `/login` signs in directly and redirects to `/dashboard`.
+The runner installs yt-dlp 2026.6.9, bgutil-ytdlp-pot-provider 1.3.1, faster-whisper 1.2.1, FFmpeg, Node.js 24, and supabase-py 2.31.0.
 
-## Local development
+## Usage
 
-```bash
-npm install
-npm run dev
-```
+1. Create a private Supabase Auth user in the ClipFarm project.
+2. Set the two public Supabase variables on the Vercel project.
+3. Deploy `main`.
+4. Sign in at `/login`.
+5. Paste a YouTube URL, choose 3/5/10 clips and 30/45/60 seconds, then queue the job.
+6. Refresh the dashboard after the worker starts. Finished clips and a ZIP appear as download links.
 
-Run the worker locally in a second terminal:
+The scheduled worker can take up to roughly five minutes to pick up a newly queued job before processing starts.
 
-```bash
-cd worker
-python -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
-uvicorn main:app --reload --port 7860
-```
+## Rights
 
-Use `WORKER_URL=http://localhost:7860` for local frontend-to-worker requests.
-
-## Cleanup
-
-Completed jobs store an `expires_at` value 24 hours after processing. The worker includes `cleanup_expired()` for scheduled cleanup. For a simple MVP, run it from a Hugging Face scheduled restart script, a small cron container, or a temporary Python shell:
-
-```bash
-python -c "from main import cleanup_expired; print(cleanup_expired())"
-```
-
-This removes expired MP4/ZIP objects from Supabase Storage and clears job asset references.
-
-## Notes and limits
-
-- The worker processes in the background of the API process; keep one job at a time for the private MVP.
-- Large VODs can exceed free-tier CPU, memory, or timeout limits. Start with shorter videos while testing.
-- No payments, teams, or social auto-upload features are included.
+Use ClipFarm only with videos you own or have permission to download, edit, and republish. YouTube and source-content rights still apply even though the processing tools are cloud-hosted.

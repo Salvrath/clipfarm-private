@@ -6,7 +6,7 @@ create table if not exists public.jobs (
   clip_length int not null check (clip_length in (30, 45, 60)),
   status text not null default 'queued' check (status in ('queued', 'processing', 'complete', 'failed')),
   error_message text,
-  assets jsonb default '[]'::jsonb,
+  assets jsonb not null default '[]'::jsonb,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now(),
   expires_at timestamptz
@@ -14,10 +14,26 @@ create table if not exists public.jobs (
 
 alter table public.jobs enable row level security;
 
-drop policy if exists "jobs are private" on public.jobs;
-create policy "jobs are private" on public.jobs for all using (auth.uid() = user_id) with check (auth.uid() = user_id);
+grant usage on schema public to authenticated;
+grant select, insert, update, delete on table public.jobs to authenticated;
 
-create or replace function public.set_updated_at() returns trigger language plpgsql as $$
+drop policy if exists "jobs_select_own" on public.jobs;
+create policy "jobs_select_own" on public.jobs for select to authenticated using ((select auth.uid()) = user_id);
+
+drop policy if exists "jobs_insert_own" on public.jobs;
+create policy "jobs_insert_own" on public.jobs for insert to authenticated with check ((select auth.uid()) = user_id);
+
+drop policy if exists "jobs_update_own" on public.jobs;
+create policy "jobs_update_own" on public.jobs for update to authenticated using ((select auth.uid()) = user_id) with check ((select auth.uid()) = user_id);
+
+drop policy if exists "jobs_delete_own" on public.jobs;
+create policy "jobs_delete_own" on public.jobs for delete to authenticated using ((select auth.uid()) = user_id);
+
+create or replace function public.set_updated_at() returns trigger
+language plpgsql
+security invoker
+set search_path = public
+as $$
 begin
   new.updated_at = now();
   return new;
@@ -25,8 +41,26 @@ end;
 $$;
 
 drop trigger if exists jobs_set_updated_at on public.jobs;
-create trigger jobs_set_updated_at before update on public.jobs for each row execute procedure public.set_updated_at();
+create trigger jobs_set_updated_at before update on public.jobs for each row execute function public.set_updated_at();
 
 insert into storage.buckets (id, name, public, file_size_limit, allowed_mime_types)
 values ('clips', 'clips', false, 1073741824, array['video/mp4', 'application/zip'])
-on conflict (id) do nothing;
+on conflict (id) do update set
+  public = excluded.public,
+  file_size_limit = excluded.file_size_limit,
+  allowed_mime_types = excluded.allowed_mime_types;
+
+drop policy if exists "users_read_own_clips" on storage.objects;
+create policy "users_read_own_clips"
+on storage.objects
+for select
+to authenticated
+using (
+  bucket_id = 'clips'
+  and exists (
+    select 1
+    from public.jobs j
+    where j.id::text = (storage.foldername(name))[1]
+      and j.user_id = (select auth.uid())
+  )
+);
