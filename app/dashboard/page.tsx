@@ -1,5 +1,6 @@
 import { redirect } from "next/navigation";
-import { createJob, signOut } from "./actions";
+import { signOut } from "./actions";
+import UploadForm from "./uploadForm";
 import { type ClipAsset, type ClipJob, serverSupabase } from "@/lib/supabaseServer";
 import RefreshButton from "./refreshButton";
 
@@ -24,20 +25,13 @@ export default async function DashboardPage() {
       <div className="topbar">
         <div>
           <h2>ClipFarm dashboard</h2>
-          <p>Paste a YouTube URL. Cloud processing starts automatically, normally within five minutes.</p>
+          <p>Upload a video. ClipFarm finds highlights, makes vertical clips and burns in captions in the cloud.</p>
         </div>
         <form action={signOut}><button className="secondary">Sign out</button></form>
       </div>
 
       <section className="card grid">
-        <form action={createJob}>
-          <label>Video URL<input name="source_url" placeholder="https://www.youtube.com/watch?v=..." required /></label>
-          <div className="form-grid">
-            <label>Number of clips<select name="clip_count" defaultValue="3"><option>3</option><option>5</option><option>10</option></select></label>
-            <label>Clip length<select name="clip_length" defaultValue="45"><option value="30">30s</option><option value="45">45s</option><option value="60">60s</option></select></label>
-          </div>
-          <button>Queue clips</button>
-        </form>
+        <UploadForm />
       </section>
 
       <section className="card" style={{ marginTop: 24 }}>
@@ -51,12 +45,18 @@ export default async function DashboardPage() {
 
 function JobCard({ job }: { job: ClipJob }) {
   const assets = job.assets || [];
+  const sourceLabel = job.source_type === "upload"
+    ? (job.source_name || "Uploaded video")
+    : (job.source_url || "YouTube video");
+
   return (
     <article className="job">
       <div className={`status ${job.status}`}>{job.status}</div>
       <strong>{job.clip_count} clips · {job.clip_length}s</strong>
-      <p style={{ overflowWrap: "anywhere" }}>{job.source_url}</p>
+      <p style={{ overflowWrap: "anywhere" }}>{sourceLabel}</p>
+      {job.status === "uploading" && <p>Video upload has not finished yet.</p>}
       {job.status === "queued" && <p>Waiting for the next cloud-worker run.</p>}
+      {job.status === "processing" && <p>Transcribing and rendering clips.</p>}
       {job.error_message && <p className="error">{job.error_message}</p>}
       {job.expires_at && <p>Files expire: {new Date(job.expires_at).toLocaleString()}</p>}
       <div className="downloads">
