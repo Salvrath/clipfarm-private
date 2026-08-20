@@ -1,5 +1,5 @@
 import { cookies } from "next/headers";
-import { createServerClient } from "@supabase/ssr";
+import { createServerClient, type CookieOptions } from "@supabase/ssr";
 
 export type ClipAsset = { path: string; signedUrl?: string; kind: "clip" | "zip" };
 export type ClipJob = {
@@ -19,6 +19,8 @@ export type ClipJob = {
   expires_at: string | null;
 };
 
+type CookieToSet = { name: string; value: string; options: CookieOptions };
+
 export function serverSupabase() {
   const cookieStore = cookies();
 
@@ -30,7 +32,7 @@ export function serverSupabase() {
         getAll() {
           return cookieStore.getAll();
         },
-        setAll(cookiesToSet) {
+        setAll(cookiesToSet: CookieToSet[]) {
           try {
             cookiesToSet.forEach(({ name, value, options }) => {
               cookieStore.set(name, value, options);
