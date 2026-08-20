@@ -72,4 +72,26 @@ jobs:
           WHISPER_MODEL: base
           WHISPER_DEVICE: cpu
           WHISPER_COMPUTE_TYPE: int8
-        run: python worker/main.py
+        run: |
+          cd "$HOME/bgutil-ytdlp-pot-provider/server"
+          node build/main.js > "$RUNNER_TEMP/bgutil.log" 2>&1 &
+          BGUTIL_PID=$!
+          trap 'kill "$BGUTIL_PID" 2>/dev/null || true' EXIT
+
+          READY=false
+          for attempt in {1..20}; do
+            if python -c 'import socket; s=socket.create_connection(("127.0.0.1", 4416), 1); s.close()'; then
+              READY=true
+              break
+            fi
+            sleep 1
+          done
+
+          if [ "$READY" != "true" ]; then
+            echo "PO-token provider failed to start"
+            cat "$RUNNER_TEMP/bgutil.log"
+            exit 1
+          fi
+
+          cd "$GITHUB_WORKSPACE"
+          python worker/main.py
