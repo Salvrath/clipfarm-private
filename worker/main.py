@@ -8,6 +8,7 @@ import zipfile
 from pathlib import Path
 from typing import Any
 
+import boto3
 import requests
 from faster_whisper import WhisperModel
 from supabase import create_client
@@ -19,6 +20,7 @@ GITHUB_OIDC_TOKEN = os.environ["GITHUB_OIDC_TOKEN"]
 WHISPER_MODEL = os.getenv("WHISPER_MODEL", "base")
 WHISPER_DEVICE = os.getenv("WHISPER_DEVICE", "cpu")
 WHISPER_COMPUTE_TYPE = os.getenv("WHISPER_COMPUTE_TYPE", "int8")
+R2_BUCKET = os.getenv("R2_BUCKET", "clipfarm-sources")
 REQUEST_TIMEOUT = 60
 
 
@@ -64,6 +66,7 @@ def main() -> None:
             call_edge("fail", job_id=job_id, error=message[:4000])
         except Exception as report_exc:  # noqa: BLE001
             print(f"Could not report failure: {report_exc}", flush=True)
+        cleanup_uploaded_source(job)
         raise
 
 
@@ -108,10 +111,28 @@ def process_job(job: dict[str, Any]) -> None:
             print(f"Uploaded {storage_path}", flush=True)
 
         call_edge("complete", job_id=job_id, assets=assets)
+        cleanup_uploaded_source(job)
         print(f"Completed job {job_id}", flush=True)
 
 
-def download_uploaded_source(job: dict[str, Any], workdir: Path) -> Path:
+def r2_client():
+    account_id = os.getenv("R2_ACCOUNT_ID", "").strip()
+    access_key_id = os.getenv("R2_ACCESS_KEY_ID", "").strip()
+    secret_access_key = os.getenv("R2_SECRET_ACCESS_KEY", "").strip()
+    if not account_id or not access_key_id or not secret_access_key:
+        raise RuntimeError(
+            "R2 is not configured on GitHub Actions. Add R2_ACCOUNT_ID, R2_ACCESS_KEY_ID and R2_SECRET_ACCESS_KEY secrets."
+        )
+    return boto3.client(
+        service_name="s3",
+        endpoint_url=f"https://{account_id}.r2.cloudflarestorage.com",
+        aws_access_key_id=access_key_id,
+        aws_secret_access_key=secret_access_key,
+        region_name="auto",
+    )
+
+
+def uploaded_source_details(job: dict[str, Any]) -> tuple[str, str]:
     job_id = str(job["id"])
     source_path = str(job.get("source_path") or "")
     match = re.fullmatch(
@@ -121,25 +142,30 @@ def download_uploaded_source(job: dict[str, Any], workdir: Path) -> Path:
     )
     if not match:
         raise RuntimeError("Uploaded job has an invalid source path")
+    return source_path, match.group(1).lower()
 
-    signed = call_edge("source_download_url", job_id=job_id)
-    signed_url = str(signed.get("signed_url") or "")
-    if not signed_url:
-        raise RuntimeError("Worker gateway did not return a source download URL")
 
-    output = workdir / f"source.{match.group(1).lower()}"
-    print("Downloading uploaded source from private storage", flush=True)
-    with requests.get(signed_url, stream=True, timeout=(30, 600)) as response:
-        response.raise_for_status()
-        with output.open("wb") as file_obj:
-            for chunk in response.iter_content(chunk_size=8 * 1024 * 1024):
-                if chunk:
-                    file_obj.write(chunk)
+def download_uploaded_source(job: dict[str, Any], workdir: Path) -> Path:
+    source_path, extension = uploaded_source_details(job)
+    output = workdir / f"source.{extension}"
+    print("Downloading uploaded source from Cloudflare R2", flush=True)
+    r2_client().download_file(R2_BUCKET, source_path, str(output))
 
     if not output.exists() or output.stat().st_size == 0:
         raise RuntimeError("Uploaded source download produced an empty file")
     print(f"Downloaded uploaded source ({output.stat().st_size} bytes)", flush=True)
     return output
+
+
+def cleanup_uploaded_source(job: dict[str, Any]) -> None:
+    if str(job.get("source_type") or "youtube") != "upload":
+        return
+    try:
+        source_path, _ = uploaded_source_details(job)
+        r2_client().delete_object(Bucket=R2_BUCKET, Key=source_path)
+        print("Deleted uploaded source from Cloudflare R2", flush=True)
+    except Exception as cleanup_exc:  # noqa: BLE001
+        print(f"R2 source cleanup warning: {cleanup_exc}", flush=True)
 
 
 def download_video(url: str, workdir: Path) -> Path:
