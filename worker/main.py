@@ -118,6 +118,8 @@ def download_video(url: str, workdir: Path) -> Path:
         "30",
         "--js-runtimes",
         "node",
+        "--extractor-args",
+        "youtube:player_client=mweb",
         "--format",
         "bv*[height<=720]+ba/b[height<=720]/best[height<=720]/best",
         "--merge-output-format",
