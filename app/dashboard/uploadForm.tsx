@@ -78,7 +78,7 @@ export default function UploadForm() {
 
       setStatus(`Uploading ${signedParts.length} parts directly to R2…`);
 
-      async function uploader() {
+      const uploader = async () => {
         while (true) {
           const index = nextIndex;
           nextIndex += 1;
@@ -93,7 +93,7 @@ export default function UploadForm() {
           uploadedBytes += blob.size;
           setProgress(Math.min(100, Math.round((uploadedBytes / file.size) * 100)));
         }
-      }
+      };
 
       await Promise.all(
         Array.from(
